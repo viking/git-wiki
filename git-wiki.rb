@@ -1,5 +1,5 @@
 #!/usr/bin/env ruby
-%w(sinatra haml sass rubygems git bluecloth rubypants).each do |dependency|
+%w(rubygems sinatra haml sass git bluecloth rubypants).each do |dependency|
   begin
     $: << File.expand_path(File.dirname(__FILE__) + "/vendor/#{dependency}/lib")
     require dependency
