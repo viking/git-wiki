@@ -1,3 +1,6 @@
 [submodule "wiki"]
 	path = wiki
 	url = /home/git/wiki.git
+[submodule "vendor/sinatra"]
+	path = vendor/sinatra
+	url = git://github.com/bmizerany/sinatra.git
