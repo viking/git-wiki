@@ -99,6 +99,7 @@ class Page
     message = tracked? ? "Edited #{@name}" : "Created #{@name}"
     Page.repo.add(@name)
     Page.repo.commit(message)
+    Page.repo.push
   end
 
   def tracked?
