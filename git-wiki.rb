@@ -1,10 +1,42 @@
 #!/usr/bin/env ruby
-%w(rubygems sinatra haml sass git redcloth captcha).each do |dependency|
+%w(rubygems sinatra haml sass git redcloth captcha coderay).each do |dependency|
   begin
     $: << File.expand_path(File.dirname(__FILE__) + "/vendor/#{dependency}/lib")
     require dependency
   rescue LoadError
     abort "Unable to load #{dependency}. Did you run 'git submodule init' ? If so install #{dependency}"
+  end
+end
+
+module Sinatra
+  class Static
+    # This is so I can set the content-type of extension-less cached pages
+    def block
+      Proc.new do
+        path = request.path_info.http_unescape
+        send_file Sinatra.application.options.public + path,
+          :disposition => nil, :type => (path =~ %r{^/\w+$} ? 'text/html' : nil)
+      end
+    end
+  end
+
+  module Cache
+    def cache(content)
+      File.open(cache_path, 'w') { |f| f.puts content }
+      content
+    end
+
+    def cache_path(page = nil)
+      if page
+        Sinatra.application.options.public + "/#{page}"
+      else
+        @cache_path ||= Sinatra.application.options.public + request.path_info.http_unescape
+      end
+    end
+  end
+
+  class EventContext
+    include Cache
   end
 end
 
@@ -28,9 +60,27 @@ class Page
   end
 
   def html
-    text = raw_text.gsub(/(?:\[\[([A-Za-z0-9]+)\]\]|([A-Z][a-z]+[A-Z][A-Za-z0-9]+))/) do |match|
-      page = $1 || $2
-      "<a class='#{Page.new(page).tracked? ? 'exists' : 'unknown'}' href='#{page}'>#{page}</a>"
+    pre = false
+    text = raw_text.gsub(/(?:<\/?coderay>|\[\[([A-Za-z0-9]+)\]\]|([A-Z][a-z]+[A-Z][A-Za-z0-9]+))/) do |match|
+      result = case match
+        when '<coderay>'
+          pre = true
+          match
+        when '</coderay>'
+          pre = false
+          match
+        else
+          if pre
+            match
+          else
+            page = $1 || $2
+            "<a class='#{Page.new(page).tracked? ? 'exists' : 'unknown'}' href='#{page}'>#{page}</a>"
+          end
+      end
+      result
+    end
+    text.gsub!(%r{<coderay>[\r\n]*(.+?)</coderay>}m) do |match|
+      "<notextile>#{CodeRay.scan($1, :ruby).div}<br style='clear: both'/></notextile>"
     end
     RedCloth.new(text).to_html
   end
@@ -64,7 +114,7 @@ use_in_file_templates!
 
 configure do
   GitRepository = ENV['GIT_WIKI_REPOSITORY'] || File.join(ENV['HOME'], 'wiki')
-  Homepage = 'Home'
+  Homepage      = 'Home'
   set_option :haml, :format => :html4
 
   unless (Page.repo = Git.open(GitRepository) rescue false)
@@ -89,9 +139,9 @@ end
 
 get('/') { redirect '/' + Homepage }
 
-get('/_stylesheet.css') do
+get('/stylesheets/:sheet.css') do
   content_type 'text/css', :charset => 'utf-8'
-  sass :stylesheet
+  cache(sass(params[:sheet].to_sym))
 end
 
 get '/_list' do
@@ -101,7 +151,12 @@ end
 
 get '/:page' do
   @page = Page.new(params[:page])
-  @page.tracked? ? haml(:show) : redirect("/e/#{@page.name}")
+  if @page.tracked?
+    # cache page
+    cache(haml(:show))
+  else
+    redirect("/e/#{@page.name}")
+  end
 end
 
 # Waiting for Black's new awesome route system
@@ -124,6 +179,10 @@ post '/e/:page' do
   @page.raw_text = params[:raw_text]
   if CAPTCHA::Web.is_valid(params[:key], params[:digest])
     @page.save
+    if File.exist?(file = cache_path(@page.name))
+      File.delete(file)
+    end
+
     request.xhr? ? @page.html : redirect("/#{@page.name}")
   else
     @captcha = CAPTCHA::Web.from_configuration( File.join(File.dirname(__FILE__), "captcha/captcha.conf") )
@@ -139,11 +198,12 @@ __END__
 %html
   %head
     %title= title
-    %link{:rel => 'stylesheet', :href => '/_stylesheet.css', :type => 'text/css'}
-    %script{:src => '/jquery-1.2.3.min.js', :type => 'text/javascript'}
-    %script{:src => '/jquery.jeditable.js', :type => 'text/javascript'}
-    %script{:src => '/jquery.autogrow.js', :type => 'text/javascript'}
-    %script{:src => '/jquery.hotkeys.js', :type => 'text/javascript'}
+    %link{:rel => 'stylesheet', :href => '/stylesheets/style.css', :type => 'text/css'}
+    %link{:rel => 'stylesheet', :href => '/stylesheets/coderay.css', :type => 'text/css'}
+    %script{:src => '/javascripts/jquery-1.2.3.min.js', :type => 'text/javascript'}
+    %script{:src => '/javascripts/jquery.jeditable.js', :type => 'text/javascript'}
+    %script{:src => '/javascripts/jquery.autogrow.js', :type => 'text/javascript'}
+    %script{:src => '/javascripts/jquery.hotkeys.js', :type => 'text/javascript'}
     :javascript
       $(document).ready(function() {
         $.hotkeys.add('Ctrl+h', function() { document.location = '/#{Homepage}' })
@@ -153,7 +213,7 @@ __END__
     .doc
       #header
         .logo 
-          %img{:src => '/helmet.png'}
+          %img{:src => '/images/helmet.png'}
         .title 
           %a{:href => '/'} Viking's wiki
         %ul#navigation
@@ -186,7 +246,7 @@ __END__
     %p 
       Please enter the text from the image:<br/>
       %input{:type => 'text', :name => 'key', :value => "", :style => @bad_captcha ? "border: 2px solid red" : nil}
-    %img{:src => "/images/#{@captcha.file_name}", :width => "#{@captcha.image.width}", :height => "#{@captcha.image.height}"}
+    %img{:src => "/images/captchas/#{@captcha.file_name}", :width => "#{@captcha.image.width}", :height => "#{@captcha.image.height}"}
   %p{:style => "clear: both; padding-top: 2em"}
     %input.submit{:type => :submit, :value => 'Save as the newest version'}
     or
@@ -208,7 +268,7 @@ __END__
         %li.even= list_item(page)
     - end
 
-@@ stylesheet
+@@ style
 body
   :font
     family: "Lucida Grande", Verdana, Arial, Bitstream Vera Sans, Helvetica, sans-serif
@@ -236,7 +296,7 @@ body
     top: -50px
   .title
     position: absolute
-    margin: 0 0 0 50px
+    margin: 0 0 0 60px
     font:
       size: 28px
     a
@@ -257,11 +317,10 @@ body
 #content
   padding: 1em 2em 2em 2em 
   background: white
-  h1
+  h1.title
     font-size: 2.4em
-  .title
     margin:
-      left: 50px
+      left: 45px
       bottom: 40px
     border-bottom: 1px solid #aaa
         
@@ -333,3 +392,224 @@ ul#pages_list
       display: none 
     &.odd
       background-color: #e3e3e3
+
+code
+  color: #7A4707
+  font:
+    family: "Courier New", Courier, monospace
+    size: 100%
+    weight: bold
+  line-height: 1.4em
+
+@@ coderay
+.CodeRay 
+  background-color: #f8f8f8
+  border: 1px solid silver
+  font-family: 'Courier New', 'Terminal', monospace
+  color: #100
+  float: left
+  pre 
+    margin: 0px
+  .code
+    width: 100%
+    padding: 1em
+    pre
+      overflow: auto
+  .af
+    color: #00C
+  .an
+    color: #007
+  .av 
+    color: #700
+  .aw
+    color: #C00
+  .bi
+    color: #509
+    font-weight: bold
+  .c
+    color: #888
+  .ch
+    color: #04D
+    .k
+      color: #04D
+    .dl
+      color: #039
+  .cl 
+    color: #B06
+    font-weight: bold 
+  .co 
+    color: #036
+    font-weight: bold
+  .cr 
+    color: #0A0
+  .cv 
+    color: #369
+  .df 
+    color: #099
+    font-weight: bold
+  .di 
+    color: #088
+    font-weight: bold
+  .dl 
+    color: black
+  .do 
+    color: #970
+  .ds 
+    color: #D42
+    font-weight: bold
+  .e  
+    color: #666
+    font-weight: bold
+  .en 
+    color: #800
+    font-weight: bold
+  .er 
+    color: #F00
+    background-color: #FAA
+  .ex 
+    color: #F00
+    font-weight: bold
+  .fl 
+    color: #60E
+    font-weight: bold
+  .fu 
+    color: #06B
+    font-weight: bold
+  .gv 
+    color: #d70
+    font-weight: bold
+  .hx 
+    color: #058
+    font-weight: bold
+  .i  
+    color: #00D
+    font-weight: bold
+  .ic 
+    color: #B44
+    font-weight: bold
+
+  .il 
+    background: #eee
+    .il 
+      background: #ddd
+      .il 
+        background: #ccc
+    .idl 
+      color: #888
+      font-weight: bold
+
+  .in 
+    color: #B2B
+    font-weight: bold
+  .iv 
+    color: #33B
+  .la 
+    color: #970
+    font-weight: bold
+  .lv 
+    color: #963
+  .oc 
+    color: #40E
+    font-weight: bold
+  .on 
+    color: #000
+    font-weight: bold
+  .op 
+ 
+  .pc 
+    color: #038
+    font-weight: bold
+  .pd 
+    color: #369
+    font-weight: bold
+  .pp 
+    color: #579
+  .pt 
+    color: #339
+    font-weight: bold
+  .r  
+    color: #080
+    font-weight: bold
+
+  .rx 
+    background-color: #fff0ff
+    .k 
+    color: #808
+    .dl 
+    color: #404
+    .mod 
+      color: #C2C
+    .fu  
+      color: #404
+      font-weight: bold
+
+  .s  
+    background-color: #fff0f0
+    .s 
+      background-color: #ffe0e0
+      .s 
+        background-color: #ffd0d0
+    .k 
+    color: #D20
+    .dl 
+    color: #710
+
+  .sh 
+    background-color: #f0fff0
+    .k 
+      color: #2B2
+    .dl 
+      color: #161
+
+  .sy 
+    color: #A60
+    .k 
+      color: #A60
+    .dl 
+      color: #630
+
+  .ta 
+    color: #070
+  .tf 
+    color: #070
+    font-weight: bold
+  .ts 
+    color: #D70
+    font-weight: bold
+  .ty 
+    color: #339
+    font-weight: bold
+  .v  
+    color: #036
+  .xt 
+    color: #444
+
+span.CodeRay
+  white-space: pre
+  border: 0px
+  padding: 2px
+
+=numbers
+  background-color: #def
+  color: gray
+  text-align: right
+
+table.CodeRay 
+  border-collapse: collapse
+  width: 100%
+  padding: 2px
+  td
+    padding: 2px 4px
+    vertical-align: top
+  .line_numbers
+    +numbers
+    tt
+      font-weight: bold
+  .no
+    +numbers
+    padding: 0px 4px
+
+ol.CodeRay
+  font-size: 10pt
+  li
+    white-space: pre
