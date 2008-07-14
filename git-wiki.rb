@@ -1,5 +1,5 @@
 #!/usr/bin/env ruby
-%w(rubygems sinatra haml sass git bluecloth rubypants).each do |dependency|
+%w(rubygems sinatra haml sass git redcloth captcha).each do |dependency|
   begin
     $: << File.expand_path(File.dirname(__FILE__) + "/vendor/#{dependency}/lib")
     require dependency
@@ -19,26 +19,33 @@ class Page
   end
 
   attr_reader :name
+  attr_writer :raw_text
 
   def initialize(name)
     @name = name
     @filename = File.join(GitRepository, @name)
+    @changed = false
   end
 
-  def body
-    BlueCloth.new(RubyPants.new(raw_body).to_html).to_html.
-      gsub(/([A-Z][a-z]+[A-Z][A-Za-z0-9]+)/) do |page|
-        "<a class='#{Page.new(page).tracked? ? 'exists' : 'unknown'}' href='#{page}'>#{page}</a>"
-      end
+  def html
+    text = raw_text.gsub(/(?:\[\[([A-Za-z0-9]+)\]\]|([A-Z][a-z]+[A-Z][A-Za-z0-9]+))/) do |match|
+      page = $1 || $2
+      "<a class='#{Page.new(page).tracked? ? 'exists' : 'unknown'}' href='#{page}'>#{page}</a>"
+    end
+    RedCloth.new(text).to_html
   end
 
-  def raw_body
-    File.exists?(@filename) ? File.read(@filename) : ''
+  def original_raw_text
+    @original_raw_text ||= File.exists?(@filename) ? File.read(@filename) : ''
   end
 
-  def body=(content)
-    return if content == raw_body
-    File.open(@filename, 'w') { |f| f << content }
+  def raw_text
+    @raw_text || original_raw_text 
+  end
+
+  def save
+    return if raw_text == original_raw_text
+    File.open(@filename, 'w') { |f| f << raw_text }
     message = tracked? ? "Edited #{@name}" : "Created #{@name}"
     Page.repo.add(@name)
     Page.repo.commit(message)
@@ -64,7 +71,6 @@ configure do
     abort "#{GitRepository}: Not a git repository. Install your wiki with `rake bootstrap`"
   end
 end
-
 
 helpers do
   def title(title=nil)
@@ -103,18 +109,28 @@ get '/:page.txt' do
   @page = Page.new(params[:page])
   throw :halt, [404, "Unknown page #{params[:page]}"] unless @page.tracked?
   content_type 'text/plain', :charset => 'utf-8'
-  @page.raw_body
+  @page.raw_text
 end
 
 get '/e/:page' do
   @page = Page.new(params[:page])
+  @captcha = CAPTCHA::Web.from_configuration( File.join(File.dirname(__FILE__), "captcha/captcha.conf") )
+  @captcha.clean
   haml :edit
 end
 
 post '/e/:page' do
   @page = Page.new(params[:page])
-  @page.body = params[:body]
-  request.xhr? ? @page.body : redirect("/#{@page.name}")
+  @page.raw_text = params[:raw_text]
+  if CAPTCHA::Web.is_valid(params[:key], params[:digest])
+    @page.save
+    request.xhr? ? @page.html : redirect("/#{@page.name}")
+  else
+    @captcha = CAPTCHA::Web.from_configuration( File.join(File.dirname(__FILE__), "captcha/captcha.conf") )
+    @captcha.clean
+    @bad_captcha = true 
+    haml :edit
+  end
 end
 
 __END__
@@ -130,123 +146,138 @@ __END__
     %script{:src => '/jquery.hotkeys.js', :type => 'text/javascript'}
     :javascript
       $(document).ready(function() {
-        $('#navigation').hide();
-        $('#edit_link').hide();
         $.hotkeys.add('Ctrl+h', function() { document.location = '/#{Homepage}' })
         $.hotkeys.add('Ctrl+l', function() { document.location = '/_list' })
       })
   %body
-    %ul#navigation
-      %li
-        %a{:href => '/'} Home
-      %li
-        %a{:href => '/_list'} List
-    #content= yield
+    .doc
+      #header
+        .logo 
+          %img{:src => '/helmet.png'}
+        .title 
+          %a{:href => '/'} Viking's wiki
+        %ul#navigation
+          %li
+            %a{:href => '/'} Home
+          %li
+            %a{:href => '/_list'} List
+      #content
+        - if @notice
+          %p#notice= @notice
+          :javascript
+            $('#notice').fadeOut(3000)
+        = yield
 
 @@ show
 - title @page.name
-:javascript
-  $(document).ready(function() {
-    $.editable.addInputType('autogrow', {
-      element : function(settings, original) {
-        var textarea = $('<textarea>');
-        if (settings.rows) {
-          textarea.attr('rows', settings.rows);
-        } else {
-          textarea.height(settings.height);
-        }
-        if (settings.cols) {
-          textarea.attr('cols', settings.cols);
-        } else {
-          textarea.width(settings.width);
-        }
-        $(this).append(textarea);
-        return(textarea);
-      },
-      plugin : function(settings, original) {
-        $('textarea', this).autogrow(settings.autogrow);
-      }
-    });
-
-    $('#page_content').editable('/e/#{@page}', {
-      loadurl: '/#{@page}.txt',
-      submit: '<button class="submit" type="submit">Save as the newest version</button>',
-      cancel: '<a class="cancel" href="" style="margin-left: 5px;">cancel</a>',
-      event: 'dblclick',
-      type: 'autogrow',
-      cols: 84,
-      rows: 20,
-      name: 'body',
-      onblur: 'ignore',
-      tooltip: ' ',
-      indicator: 'Saving...',
-      loadtext: '',
-      cssclass: 'edit_form',
-      callback: function(v, s) {
-        /**notice = $('<p id="notice">New version successfuly saved!</p>').fadeOut('slow')
-        $('#content').prepend(notice.html())*/
-      }
-    })
-  })
-%a#edit_link{:href => "/e/#{@page}"} edit this page
-%h1= title
+%a#edit_link{:href => "/e/#{@page}"} Edit this page
+%h1.title= title
 #page_content
-  ~"#{@page.body}"
+  ~"#{@page.html}"
 
 @@ edit
 - title "Editing #{@page}"
 
-%h1= title
+%h1.title= title
 %form{:method => 'POST', :action => "/e/#{@page}"}
   %p
-    %textarea{:name => 'body', :rows => 16, :cols => 60}= @page.raw_body
-  %p
+    %textarea{:name => 'raw_text', :rows => 16, :cols => 60}= @page.raw_text
+  .captcha
+    %p 
+      Please enter the text from the image:<br/>
+      %input{:type => 'text', :name => 'key', :value => "", :style => @bad_captcha ? "border: 2px solid red" : nil}
+    %img{:src => "/images/#{@captcha.file_name}", :width => "#{@captcha.image.width}", :height => "#{@captcha.image.height}"}
+  %p{:style => "clear: both; padding-top: 2em"}
     %input.submit{:type => :submit, :value => 'Save as the newest version'}
     or
     %a.cancel{:href=>"/#{@page}"} cancel
+    %input{:type => 'hidden', :name => 'digest', :value => "#{@captcha.digest}"}  
 
 @@ list
 - title "Listing pages"
 
-%h1 All pages
+%h1.title All pages
 - if @pages.empty?
 %p No pages found.
 - else
   %ul#pages_list
-  - @pages.each_with_index do |page, index|
-    - if (index % 2) == 0
-      %li.odd= list_item(page)
-    - else
-      %li.even= list_item(page)
-  - end
+    - @pages.each_with_index do |page, index|
+      - if (index % 2) == 1
+        %li.odd= list_item(page)
+      - else
+        %li.even= list_item(page)
+    - end
 
 @@ stylesheet
 body
   :font
     family: "Lucida Grande", Verdana, Arial, Bitstream Vera Sans, Helvetica, sans-serif
-    size: 14px
+    size: 62.5%
     color: black
-  line-height: 160%
-  background-color: white
+  line-height: 1.25 
+  background-color: #ddd
   margin: 0
-  padding: 0
+  padding: 0 70px 1em 0
+  text-align: center
 
-#navigation
-  padding-left: 2em
-  margin: 0
-  li
-    list-style-type: none
-    display: inline
+.doc
+  margin: 0 auto
+  min-width: 840px
+  width: 840px
+  text-align: left
+
+#header
+  height: 39px
+  margin-top: 5em
+  position: relative
+  .logo
+    position: absolute
+    left: -91px
+    top: -50px
+  .title
+    position: absolute
+    margin: 0 0 0 50px
+    font:
+      size: 28px
+    a
+      color: black
+      &:hover
+        text-decoration: none
+        color: black
+  #navigation
+    position: absolute
+    right: 0
+    bottom: 7px
+    margin: 0 10px 0 0
+    font-size: 15px
+    li
+      list-style-type: none
+      display: inline
 
 #content
-  padding: 2em
-.notice
+  padding: 1em 2em 2em 2em 
+  background: white
+  h1
+    font-size: 2.4em
+  .title
+    margin:
+      left: 50px
+      bottom: 40px
+    border-bottom: 1px solid #aaa
+        
+  #page_content,
+  #pages_list
+    font-size: 14px
+
+#notice
   background-color: #ffc
   padding: 6px
+  margin-left: 5em
 
 a
   padding: 2px
   color: blue
+  text-decoration: none
   &.exists
     &:hover
       background-color: blue
@@ -265,12 +296,12 @@ textarea
   font-size: 14px
   line-height: 18px
 
-.edit_link
-  display: block
+#edit_link
   background-color: #ffc
   font-weight: bold
   text-decoration: none
   color: black
+  float: right
   &:hover
     color: white
     background-color: red
@@ -284,6 +315,14 @@ textarea
     text-decoration: none
     background-color: red
     color: white
+
+.captcha
+  img
+    float: left
+  p
+    float: left
+    margin-right: 4em
+
 ul#pages_list
   list-style-type: none
   margin: 0
@@ -293,4 +332,4 @@ ul#pages_list
     a.edit
       display: none 
     &.odd
-      background-color: #D3D3D3
+      background-color: #e3e3e3
