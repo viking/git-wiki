@@ -61,7 +61,7 @@ class Page
 
   def html
     pre = false
-    text = raw_text.gsub(/(?:<\/?coderay>|\[\[([A-Za-z0-9]+)\]\]|([A-Z][a-z]+[A-Z][A-Za-z0-9]+))/) do |match|
+    text = raw_text.gsub(/(?:<\/?coderay>|\[\[([A-Za-z0-9]+)\]\]|(!?[A-Z][a-z]+[A-Z][A-Za-z0-9]+))/) do |match|
       result = case match
         when '<coderay>'
           pre = true
@@ -70,10 +70,12 @@ class Page
           pre = false
           match
         else
+          page = $1 || $2
           if pre
             match
+          elsif page[0] == ?!
+            page[1..-1]
           else
-            page = $1 || $2
             "<a class='#{Page.new(page).tracked? ? 'exists' : 'unknown'}' href='#{page}'>#{page}</a>"
           end
       end
