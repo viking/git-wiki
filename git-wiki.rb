@@ -273,14 +273,14 @@ __END__
 
 @@ style
 body
-  :font
+  font:
     family: "Lucida Grande", Verdana, Arial, Bitstream Vera Sans, Helvetica, sans-serif
     size: 62.5%
     color: black
   line-height: 1.25 
   background-color: #ddd
   margin: 0
-  padding: 0 70px 1em 0
+  padding: 10px 90px
   text-align: center
 
 .doc
@@ -290,16 +290,16 @@ body
   text-align: left
 
 #header
-  height: 39px
-  margin-top: 5em
+  height: 89px
   position: relative
   .logo
     position: absolute
+    bottom: -80px
     left: -91px
-    top: -50px
   .title
     position: absolute
-    margin: 0 0 0 60px
+    top: 50px
+    left: 60px
     font:
       size: 28px
     a
@@ -309,16 +309,15 @@ body
         color: black
   #navigation
     position: absolute
-    right: 0
-    bottom: 7px
-    margin: 0 10px 0 0
+    right: 10px
+    top: 50px
     font-size: 15px
     li
       list-style-type: none
       display: inline
 
 #content
-  padding: 1em 2em 2em 2em 
+  padding: 2em 
   background: white
   h1.title
     font-size: 2.4em
@@ -337,7 +336,6 @@ body
   margin-left: 5em
 
 a
-  padding: 2px
   color: blue
   text-decoration: none
   &.exists
